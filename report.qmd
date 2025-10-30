@@ -1,6 +1,6 @@
 ---
 title: "EV Power - Lab 4 Project Report"
-format: typst
+format: html
 ---
 
 # Example Solution 1
@@ -8,27 +8,169 @@ format: typst
 ## **Part 0: libraries**
 
 ```{r}
-
+library(tidyverse) 
+library(ggplot2) 
+library(leaflet)
 ```
 
 ## **Part 1:** **Defining Research Question**
 
-Chosen Question:
+Chosen Question: Are EV registrations concentrated in states with cleaner (more renewable) energy mixes? I think that states that generate a higher percentage of their electricity from renewable sources will have more electric vehicle registrations, due to the fact that electricity can be more affordable and widely spread. 
 
 ## **Part 2: Data Preparation and Cleaning**
 
 ```{r}
+
+renew21 <- read_csv("data/renew-use-2021.csv")
+renew22 <- read_csv("data/renew-use-2022.csv")
+renew23 <- read_csv("data/renew-use-2023.csv")
+
+renew21 <- renew21 |> rename(state = State, renewable_use = Renewable_Use_2021)
+renew22 <- renew22 |> rename(state = State, renewable_use = Renewable_Use_2022)
+renew23 <- renew23 |> rename(state = State, renewable_use = Renewable_Use_2023)
+
+renew21$year <- 2021
+renew22$year <- 2022
+renew23$year <- 2023
+
+renew_all <- bind_rows(renew21, renew22, renew23)
+renew_all$state <- str_to_title(renew_all$state)
+
+total21 <- read_csv("data/total-use-2021.csv")
+total22 <- read_csv("data/total-use-2022.csv")
+total23 <- read_csv("data/total-use-2023.csv")
+
+total21_long <- total21 |>
+  pivot_longer(
+    cols = -Energy_Source,
+    names_to = "state",
+    values_to = "energy_use"
+  ) |>
+  group_by(state) |>
+  summarize(total_energy_use = sum(energy_use, na.rm = TRUE)) |>
+  mutate(year = 2021)
+
+total22_long <- total22 |>
+  pivot_longer(
+    cols = -Energy_Source,
+    names_to = "state",
+    values_to = "energy_use"
+  ) |>
+  group_by(state) |>
+  summarize(total_energy_use = sum(energy_use, na.rm = TRUE)) |>
+  mutate(year = 2022)
+
+total23_long <- total23 |>
+  pivot_longer(
+    cols = -Energy_Source,
+    names_to = "state",
+    values_to = "energy_use"
+  ) |>
+  group_by(state) |>
+  summarize(total_energy_use = sum(energy_use, na.rm = TRUE)) |>
+  mutate(year = 2023)
+
+total_all <- bind_rows(total21_long, total22_long, total23_long)
+total_all$state <- str_to_title(total_all$state)
+
+ev <- read_csv("data/ev-registrations-by-state-2023.csv") |>
+  rename(
+    state = `electric vehicle registrations_by_state (2023)`,
+    ev_registrations = `...2`
+  )
+
+ev$state <- str_to_title(ev$state)
+
+
+head(renew_all)
+head(total_all)
+head(ev)
+
 
 ```
 
 ## **Part 3: Joining / Pivoting Datasets for Analysis**
 
 ```{r}
+state_lookup <- tibble(
+  state = str_to_title(state.abb),
+  full_name = state.name
+)
+
+energy_joined <- renew_all |>
+  left_join(total_all, by = c("state", "year")) |>
+  mutate(
+    renewable_use = as.numeric(gsub("[^0-9.]", "", renewable_use)),
+    total_energy_use = as.numeric(gsub("[^0-9.]", "", total_energy_use)),
+    pct_renew = renewable_use / total_energy_use * 100        
+  ) |>
+  left_join(state_lookup, by = "state") |>
+  mutate(state = full_name) |>
+  select(-full_name)
+
+head(energy_joined)
+
+ev_energy_2023 <- energy_joined |>
+  filter(year == 2023) |>
+  left_join(ev, by = "state") |>
+  mutate(
+    ev_registrations = as.numeric(gsub("[^0-9.]", "", ev_registrations)),
+    ev_per_energy = ev_registrations / total_energy_use
+  )
+
+head(ev_energy_2023)
+
+
+# Check
+sum(!is.na(ev_energy_2023$ev_registrations))
+
+# Summary statistics
+summary(ev_energy_2023$pct_renew)
+summary(ev_energy_2023$ev_registrations)
+
+cor(ev_energy_2023$pct_renew, ev_energy_2023$ev_registrations, use = "complete.obs")
+
 
 ```
 
 ## **Part 4: Mapping Visualization**
 
 ```{r}
+state_coords <- tibble(
+  state = state.name,
+  lat = state.center$y,
+  lng = state.center$x
+)
+
+
+map_data <- ev_energy_2023 |>
+  filter(!is.na(pct_renew), !is.na(ev_registrations)) |>
+  left_join(state_coords, by = "state")
+
+
+leaflet(map_data) |>
+  addTiles() |>
+  addCircleMarkers(
+    lng = ~lng,
+    lat = ~lat,
+    radius = ~sqrt(ev_registrations) / 80,
+    color = ~ifelse(pct_renew > median(pct_renew, na.rm = TRUE),
+                    "darkgreen", "skyblue"),
+    fillOpacity = 0.6,
+    popup = ~paste0(
+      "<b>", state, "</b><br>",
+      "EV Registrations: ", ev_registrations, "<br>",
+      "Renewable Share: ", round(pct_renew, 1), "%"
+    )
+  ) |>
+  addLegend(
+    position = "bottomright",
+    colors = c("darkgreen", "skyblue"),
+    labels = c("Above median renewable", "Below median"),
+    title = "Renewable Energy Mix"
+  )
 
 ```
+
+
+I developed this interactive map using the leaflet library which visualizes EV registrations and renewable energy share across U.S. states for 2023. Each circle’s size represents the number of EVs in that specific state, while its color indicates whether the state’s renewable share is above or below the median. Although some high-renewable states also have many EVs (such as CA & WA), EV adoption doesn't seem to be best indicated by renewable energy, which might point us to the fact that the quantity of EV registrations might depend on additional factors such as income levels, and infrastructure.
